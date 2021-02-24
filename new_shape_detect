@@ -1,0 +1,142 @@
+#!/usr/bin/env python2
+
+'''
+
+Short Description:      Program which attempts to detect simple geometric
+                        shapes in a video feed.
+
+Extended Description:   Subscripes to video topic, and analyzes each given
+                        frame of video. This frame is altered to remove
+                        noise and identify contours of images, and the
+                        contour points are approximated.
+                        The number of lines determines the shape in the frame.
+                        If no frame is given, then the program instead
+                        defaults to no detection. The program structure is
+                        set into four main modules, first user defined
+                        functionality is given by the user (e.g. setting
+                        parameters, camera). Second, libraries are imported,
+                        and global declarations are made, etc.
+                        Third, functions are defined (without prototyping).
+                        Lastly, driver code is implemented.
+
+Dependencies:           This program is intended to operate using ROS & Python.
+                        Moreover, packages/libraries used are as follow:
+                        - opencv
+                        - rospy
+
+Author(s):              Alexander Wallen Kiessling & Tim Gidlof
+
+'''
+
+##########################################################################
+##                                USER SETUP
+##########################################################################
+
+'''
+This section is intended to be changed by the user, to fit their
+their requirements. However, some functionality does have default
+values, which can be used if no changes are necessary.
+'''
+
+image_topic     = "raspicam_node/image"
+detection_topic = "tag_detections_image"
+image_encoding  = "bgr8"
+area_min        = 150                 # minimum area of contour for detection
+area_max        = 950                # maximum area of contour for detection
+thresh_low      = 10
+thresh_high     = 200
+
+
+##########################################################################
+##                                STATIC SETUP
+##########################################################################
+
+'''
+This section should not be changed by users.
+'''
+
+# Import packages/libraries
+import cv2
+import rospkg
+import rospy
+import numpy as np
+
+from sensor_msgs.msg import Image
+from cv_bridge import CvBridge, CvBridgeError
+
+##########################################################################
+##                          FUNCTION DEFINITIONS
+##########################################################################
+
+
+class ShapeDetector:
+
+    def __init__(self):
+        self.bridge = CvBridge()
+        self.image_sub = rospy.Subscriber(image_topic, Image, self.callback, queue_size=2)
+        self.image_pub = rospy.Publisher(detection_topic, Image, queue_size=2)
+
+    def callback(self, data):
+        cv_image = self.bridge.imgmsg_to_cv2(data, image_encoding)
+        copy_image = cv_image.copy()
+        dilated_image = self.imageManipulate(cv_image)
+        contours = self.findContours(dilated_image)
+        output_image = self.findShape(contours, copy_image)
+        self.image_pub.publish(self.bridge.cv2_to_imgmsg(output_image, image_encoding))
+
+    def imageManipulate(self, image):
+        #perform filtering on image to ease contour finding
+        blurred_image = cv2.GaussianBlur(image, (7, 7), 1)
+        gray_image = cv2.cvtColor(blurred_image, cv2.COLOR_BGR2GRAY)
+        canny_image = cv2.Canny(gray_image, thresh_low, thresh_high)
+        kernel = np.ones(3)
+        dilated_image = cv2.dilate(canny_image, kernel, iterations = 1)
+        return dilated_image
+
+    def findContours(self, image):
+        #find contours from given manipulated image
+        #cropped_image = image[200:400, 0:1000]
+        contours, hierarchy = cv2.findContours(image, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+        return contours
+
+    def findShape(self, contours, output_image):
+        #find shapes, and draw on output image result of detection
+        for contour in contours:
+            area = cv2.contourArea(contour)
+            if area_min < area < area_max:
+                arc = cv2.arcLength(contour, True)
+                approx = cv2.approxPolyDP(contour, 0.04 * arc, True)
+                x, y, w, h = cv2.boundingRect(approx)
+                lines = len(approx)
+                type = ""
+                flag = False
+                if lines == 3:
+                    type = "triangle"
+                    flag = True
+                elif lines == 4:
+                    if 0.95 <= w / float(h) <= 1.05:
+                        type = "square"
+                        flag = True
+                elif lines == 5:
+                    type = "pentagon"
+                    flag = True
+                if flag:
+                    cv2.rectangle(output_image, (x, y), (x+w, y+h), (0,0, 255), 5)
+                    cv2.putText(output_image, "Area: " + str(int(area)), (x+w+20, y+45), cv2.FONT_HERSHEY_COMPLEX, 0.7, (0,255,0), 2)
+                    cv2.putText(output_image, "Type:" + type, (x+w+20, y+20), cv2.FONT_HERSHEY_COMPLEX, 0.7, (0,255,0), 2)
+        return output_image
+
+
+##########################################################################
+##                          DRIVER CODE
+##########################################################################
+
+'''
+This section is intended to initialize any code which requires startup prompt
+to be used in applications.
+'''
+
+if __name__ == '__main__':
+    rospy.init_node("shape_detector.py", anonymous = True)
+    sd = ShapeDetector()
+    rospy.spin()
